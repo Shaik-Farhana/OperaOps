@@ -50,21 +50,25 @@ class HindsightClient:
             return {"status": "stored", "memory_id": entry["id"]}
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{HINDSIGHT_BASE_URL}/pipelines/{self.pipeline_id}/documents",
-                headers=self.headers,
-                json={
-                    "content": content,
-                    "metadata": {
-                        "incident_id": incident_id,
-                        "source": "operaops",
-                        **metadata,
+            try:
+                response = await client.post(
+                    f"{HINDSIGHT_BASE_URL}/pipelines/{self.pipeline_id}/documents",
+                    headers=self.headers,
+                    json={
+                        "content": content,
+                        "metadata": {
+                            "incident_id": incident_id,
+                            "source": "operaops",
+                            **metadata,
+                        },
                     },
-                },
-                timeout=15.0,
-            )
-            response.raise_for_status()
-            return response.json()
+                    timeout=15.0,
+                )
+                response.raise_for_status()
+                return response.json()
+            except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+                print(f"[Hindsight] store failed, continuing without persistence: {exc}")
+                return {"status": "degraded", "reason": "hindsight_store_failed"}
 
     async def recall(self, query: str, top_k: int = 3) -> list[dict]:
         """
@@ -90,15 +94,19 @@ class HindsightClient:
             return matches[:top_k]
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{HINDSIGHT_BASE_URL}/pipelines/{self.pipeline_id}/retrieve",
-                headers=self.headers,
-                json={"query": query, "top_k": top_k},
-                timeout=15.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data.get("documents", [])
+            try:
+                response = await client.post(
+                    f"{HINDSIGHT_BASE_URL}/pipelines/{self.pipeline_id}/retrieve",
+                    headers=self.headers,
+                    json={"query": query, "top_k": top_k},
+                    timeout=15.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data.get("documents", [])
+            except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+                print(f"[Hindsight] recall failed, falling back to no memory: {exc}")
+                return []
 
     async def reflect(self, pattern_query: str) -> Optional[str]:
         """
