@@ -1,0 +1,167 @@
+[
+  {
+    "id": "inc_001",
+    "title": "DB connection pool exhausted — payments-service",
+    "service": "payments-service",
+    "severity": "P1",
+    "error_message": "FATAL: remaining connection slots are reserved for non-replication superuser connections",
+    "stack_trace": "PostgreSQLException: FATAL: remaining connection slots are reserved\n  at ConnectionPool.acquire (pool.js:142)\n  at PaymentProcessor.charge (processor.js:88)\n  at POST /api/v2/payments (routes.js:34)",
+    "category": "database",
+    "known_fix": "Increase max_connections in postgresql.conf or reduce pool size in app config. Restart connection pool manager.",
+    "resolution_time_minutes": 14
+  },
+  {
+    "id": "inc_002",
+    "title": "Memory leak detected — recommendation-engine",
+    "service": "recommendation-engine",
+    "severity": "P2",
+    "error_message": "OOMKilled: Container exceeded memory limit of 2Gi",
+    "stack_trace": "OOMKilled at runtime\n  RSS: 2.1GB, Heap: 1.8GB\n  at RecommendationWorker.process (worker.py:221)\n  at asyncio.Task._step (tasks.py:232)",
+    "category": "memory",
+    "known_fix": "Restart the pod to release memory. Root cause is unbounded LRU cache in recommendation-engine v2.3.1 — patch available in v2.3.2.",
+    "resolution_time_minutes": 8
+  },
+  {
+    "id": "inc_003",
+    "title": "Failed deployment rollout — auth-service",
+    "service": "auth-service",
+    "severity": "P1",
+    "error_message": "ImagePullBackOff: failed to pull image gcr.io/prod/auth-service:v4.1.0",
+    "stack_trace": "Warning  Failed     kubelet  Failed to pull image: rpc error: code = Unknown\ndesc = failed to pull and unpack image: failed to resolve reference\n  at k8s.io/kubelet/pkg/images (image_manager.go:553)",
+    "category": "deployment",
+    "known_fix": "Image tag v4.1.0 was not pushed to registry. Revert deployment to v4.0.9 via: kubectl rollout undo deployment/auth-service",
+    "resolution_time_minutes": 5
+  },
+  {
+    "id": "inc_004",
+    "title": "API rate limit breach — stripe-integration",
+    "service": "billing-service",
+    "severity": "P2",
+    "error_message": "StripeRateLimitError: Too many requests made to the API too quickly",
+    "stack_trace": "StripeRateLimitError: Too many requests\n  at stripe.charges.create (stripe.js:102)\n  at BillingService.processInvoices (billing.js:67)\n  at CronJob.run (scheduler.js:88)",
+    "category": "api",
+    "known_fix": "Implement exponential backoff in stripe client. Add request queue with 100 req/sec cap. Batch invoice processing to off-peak hours.",
+    "resolution_time_minutes": 22
+  },
+  {
+    "id": "inc_005",
+    "title": "Pod crashloop — order-processor",
+    "service": "order-processor",
+    "severity": "P1",
+    "error_message": "CrashLoopBackOff: back-off 5m0s restarting failed container",
+    "stack_trace": "Error: Cannot find module './config/database'\n  at Function.Module._resolveFilename (internal/modules/cjs/loader.js:880)\n  at process.nextTick (internal/process/next_tick.js:22)\nExiting with code 1",
+    "category": "deployment",
+    "known_fix": "Missing DATABASE_CONFIG env var in new deployment. Add DATABASE_CONFIG secret to k8s deployment manifest and redeploy.",
+    "resolution_time_minutes": 7
+  },
+  {
+    "id": "inc_006",
+    "title": "Replica lag critical — analytics-db",
+    "service": "analytics-service",
+    "severity": "P2",
+    "error_message": "Replication lag: 847 seconds behind primary",
+    "stack_trace": "PostgreSQL replication monitor alert\n  Primary LSN: 0/B2F3A88\n  Replica LSN: 0/A1C2D44\n  Lag bytes: 286,532,416\n  Alert threshold: 300 seconds",
+    "category": "database",
+    "known_fix": "Check replica disk I/O — likely throttled. Increase iops on replica EBS volume or pause non-critical analytics queries to let replica catch up.",
+    "resolution_time_minutes": 35
+  },
+  {
+    "id": "inc_007",
+    "title": "SSL certificate expired — api-gateway",
+    "service": "api-gateway",
+    "severity": "P1",
+    "error_message": "SSL_ERROR_RX_RECORD_TOO_LONG: Certificate expired 2 hours ago",
+    "stack_trace": "SSL handshake failed: certificate has expired\n  NotAfter: Jun 28 00:00:00 2026 GMT\n  at tls.TLSSocket._finishInit (tls.js:641)\n  at TLSWrap.ssl.onhandshakedone (tls.js:466)",
+    "category": "infrastructure",
+    "known_fix": "Renew certificate via certbot: certbot renew --force-renewal. Restart nginx. Add auto-renewal cron job to prevent recurrence.",
+    "resolution_time_minutes": 10
+  },
+  {
+    "id": "inc_008",
+    "title": "Disk full — log aggregator node",
+    "service": "logging-service",
+    "severity": "P2",
+    "error_message": "No space left on device: /var/log partition at 100%",
+    "stack_trace": "OSError: [Errno 28] No space left on device: '/var/log/app/combined.log'\n  at LogWriter.flush (writer.py:144)\n  at asyncio.Task._step (tasks.py:232)",
+    "category": "infrastructure",
+    "known_fix": "Run log rotation immediately: logrotate -f /etc/logrotate.d/app. Delete logs older than 7 days. Expand /var/log partition or add log shipping to S3.",
+    "resolution_time_minutes": 18
+  },
+  {
+    "id": "inc_009",
+    "title": "Upstream timeout cascade — search-service",
+    "service": "search-service",
+    "severity": "P1",
+    "error_message": "Elasticsearch timeout: no response from cluster in 30000ms",
+    "stack_trace": "ConnectionTimeout: Request timed out\n  at Transport.request (transport.js:387)\n  at Client.search (client.js:234)\n  at SearchService.query (search.js:78)",
+    "category": "api",
+    "known_fix": "Elasticsearch cluster has split-brain issue. Force master election: POST /_cluster/voting_config_exclusions. Scale down and up data nodes one by one.",
+    "resolution_time_minutes": 45
+  },
+  {
+    "id": "inc_010",
+    "title": "Heap dump spike — session-manager",
+    "service": "session-manager",
+    "severity": "P2",
+    "error_message": "Java heap space: GC overhead limit exceeded",
+    "stack_trace": "java.lang.OutOfMemoryError: GC overhead limit exceeded\n  at java.util.HashMap.resize(HashMap.java:704)\n  at com.app.sessions.SessionCache.put(SessionCache.java:88)\n  at com.app.auth.AuthFilter.doFilter(AuthFilter.java:52)",
+    "category": "memory",
+    "known_fix": "Increase JVM heap: -Xmx4g. SessionCache has unbounded growth — add TTL of 30 minutes. Restart service after config change.",
+    "resolution_time_minutes": 12
+  },
+  {
+    "id": "inc_011",
+    "title": "DB connection pool exhausted — inventory-service",
+    "service": "inventory-service",
+    "severity": "P1",
+    "error_message": "HikariPool-1 - Connection is not available, request timed out after 30000ms",
+    "stack_trace": "com.zaxxer.hikari.pool.HikariPool$PoolInitializationException\n  at InventoryRepository.findBySkuId(InventoryRepository.java:144)\n  at InventoryService.checkStock(InventoryService.java:89)",
+    "category": "database",
+    "known_fix": "Same pattern as payments-service pool exhaustion. Increase hikari pool size or reduce query hold time. Check for unclosed connections in transaction blocks.",
+    "resolution_time_minutes": 11
+  },
+  {
+    "id": "inc_012",
+    "title": "Node not ready — worker-cluster",
+    "service": "worker-cluster",
+    "severity": "P2",
+    "error_message": "Node worker-node-07 status: NotReady for 8 minutes",
+    "stack_trace": "Event: NodeNotReady\n  Reason: KubeletNotReady\n  Message: container runtime network not ready: NetworkReady=false\n  reason: NetworkPlugin cni is not initialized",
+    "category": "infrastructure",
+    "known_fix": "CNI plugin failed after kernel update. Drain node, delete and recreate it. Or restart kubelet: systemctl restart kubelet on the affected node.",
+    "resolution_time_minutes": 20
+  },
+  {
+    "id": "inc_013",
+    "title": "Env var missing post-deploy — notification-service",
+    "service": "notification-service",
+    "severity": "P2",
+    "error_message": "KeyError: 'SENDGRID_API_KEY' — service started without required config",
+    "stack_trace": "KeyError: 'SENDGRID_API_KEY'\n  at EmailClient.__init__(client.py:22)\n  at NotificationService.startup(service.py:45)\n  at uvicorn.main:main",
+    "category": "deployment",
+    "known_fix": "SENDGRID_API_KEY not set in new k8s secret. Add to secrets manifest and rolling restart. Same pattern as order-processor missing DATABASE_CONFIG.",
+    "resolution_time_minutes": 6
+  },
+  {
+    "id": "inc_014",
+    "title": "Rate limit on GitHub API — CI pipeline",
+    "service": "ci-pipeline",
+    "severity": "P3",
+    "error_message": "API rate limit exceeded for token: 60 requests/hour reached",
+    "stack_trace": "GithubException: 403 {\"message\": \"API rate limit exceeded\"\n  \"documentation_url\": \"https://docs.github.com/rest/overview/rate-limits\"}\n  at PipelineRunner.fetchPR (runner.py:201)",
+    "category": "api",
+    "known_fix": "Rotate to a different GitHub PAT with fresh quota. Long term: cache PR metadata to avoid repeat API calls per pipeline run.",
+    "resolution_time_minutes": 4
+  },
+  {
+    "id": "inc_015",
+    "title": "Slow query lock — reporting-db",
+    "service": "reporting-service",
+    "severity": "P2",
+    "error_message": "Lock wait timeout exceeded; try restarting transaction",
+    "stack_trace": "MySQLdb.OperationalError: (1205, 'Lock wait timeout exceeded')\n  at ReportGenerator.buildMonthly(generator.py:334)\n  at CeleryTask.run(tasks.py:67)",
+    "category": "database",
+    "known_fix": "Long-running monthly report query is blocking OLTP writes. Kill the query: KILL QUERY [pid]. Schedule heavy reports to off-peak window (2-4am).",
+    "resolution_time_minutes": 9
+  }
+]
