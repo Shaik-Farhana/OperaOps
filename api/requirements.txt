@@ -1,0 +1,9 @@
+fastapi==0.138.1
+groq==1.5.0
+openai>=1.0.0
+python-dotenv==1.2.2
+cascadeflow==1.2.0
+httpx==0.28.1
+pydantic==2.13.4
+supabase==2.31.0
+psycopg[binary]>=3.2.0

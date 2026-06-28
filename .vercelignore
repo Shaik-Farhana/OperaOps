@@ -1,0 +1,10 @@
+# Local / CLI only — not bundled into Vercel serverless
+scripts/
+supabase/
+data/generated/
+data/trajectories/
+**/*.md
+!README.md
+.env*
+!.env.example
+frontend/node_modules/

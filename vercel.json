@@ -1,0 +1,29 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cd frontend && npm ci && npm run build",
+  "outputDirectory": "frontend/dist",
+  "installCommand": "cd frontend && npm ci",
+  "env": {
+    "FLYWHEEL_LOG_DIR": "/tmp/operaops-trajectories"
+  },
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60,
+      "memory": 1024,
+      "includeFiles": "{backend/**,data/**}"
+    }
+  },
+  "rewrites": [
+    { "source": "/health", "destination": "/api" },
+    { "source": "/incidents", "destination": "/api" },
+    { "source": "/incidents/:path*", "destination": "/api" },
+    { "source": "/memory/:path*", "destination": "/api" },
+    { "source": "/costs", "destination": "/api" },
+    { "source": "/costs/:path*", "destination": "/api" },
+    { "source": "/moe/:path*", "destination": "/api" },
+    { "source": "/eval/:path*", "destination": "/api" },
+    { "source": "/flywheel/:path*", "destination": "/api" },
+    { "source": "/demo/:path*", "destination": "/api" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
