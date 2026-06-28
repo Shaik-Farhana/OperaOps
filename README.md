@@ -74,7 +74,7 @@ It does **not** connect to live production systems. It is a **hackathon demo** s
 
 ```bash
 git clone <your-repo-url>
-cd OperaOps
+cd <repo-folder>
 ```
 
 ### 2. Environment
@@ -84,7 +84,13 @@ cp .env.example .env.local
 # Fill in GROQ_API_KEY, HINDSIGHT_API_KEY, HINDSIGHT_BANK_ID=opera, Supabase vars
 ```
 
-Secrets live in **`.env.local` only** — never commit it (see `.gitignore`).
+On Windows PowerShell, use:
+
+```powershell
+Copy-Item .env.example .env.local
+```
+
+Secrets live in **`.env.local` only** — never commit it (see `.gitignore`). The repo includes `.env.example` as a template for the required variables.
 
 ### 3. Backend
 
@@ -203,7 +209,7 @@ OperaOps/
 ## Security
 
 - **Do not commit** `.env.local`, API keys, or private notes.
-- Only **`README.md`** is tracked for markdown in this repo; other `.md` files stay local.
+- Keep ad hoc markdown notes local unless they are meant to be part of the repo.
 - Rotate any key that was ever pushed to a remote by mistake.
 
 ---
