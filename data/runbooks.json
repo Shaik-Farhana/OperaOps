@@ -1,0 +1,57 @@
+{
+  "database": {
+    "title": "Database Incident Playbook",
+    "steps": [
+      "Check active connections: SELECT count(*) FROM pg_stat_activity;",
+      "Review max_connections vs pool size in app config",
+      "Check replication lag on replicas if applicable",
+      "Increase max_connections or reduce pool size temporarily",
+      "Restart connection pool manager after config change"
+    ],
+    "common_causes": ["connection pool exhaustion", "replication lag", "long-running queries blocking slots"]
+  },
+  "deployment": {
+    "title": "Deployment Incident Playbook",
+    "steps": [
+      "kubectl describe pod <pod-name> for events",
+      "Check image tag exists in registry",
+      "Verify env vars and secrets in deployment manifest",
+      "kubectl rollout undo deployment/<name> if bad release",
+      "Redeploy with corrected image tag or config"
+    ],
+    "common_causes": ["ImagePullBackOff", "CrashLoopBackOff", "missing env vars", "bad image tag"]
+  },
+  "memory": {
+    "title": "Memory Incident Playbook",
+    "steps": [
+      "kubectl top pod to confirm RSS usage",
+      "Restart pod for immediate relief",
+      "Check for memory leaks in recent deploys",
+      "Review container limits in deployment spec",
+      "Apply patch version if known leak exists"
+    ],
+    "common_causes": ["OOMKilled", "unbounded cache", "memory limit too low"]
+  },
+  "api": {
+    "title": "API Integration Playbook",
+    "steps": [
+      "Check third-party API status page",
+      "Implement exponential backoff on client",
+      "Add request queue with rate cap",
+      "Batch operations to off-peak hours",
+      "Enable circuit breaker if sustained failures"
+    ],
+    "common_causes": ["rate limit breach", "timeout", "upstream 5xx"]
+  },
+  "infrastructure": {
+    "title": "Infrastructure Playbook",
+    "steps": [
+      "Check certificate expiry: openssl s_client or certbot certificates",
+      "Renew cert: certbot renew --force-renewal",
+      "Restart reverse proxy after renewal",
+      "Verify DNS resolution for affected endpoints",
+      "Add auto-renewal cron to prevent recurrence"
+    ],
+    "common_causes": ["SSL cert expired", "DNS misconfiguration", "load balancer health check failure"]
+  }
+}

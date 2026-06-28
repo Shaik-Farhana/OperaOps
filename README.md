@@ -1,39 +1,70 @@
 # OperaOps — AI Incident Response Agent
 
-> An engineering incident response agent that learns from every outage, routes LLM calls intelligently, and gets measurably cheaper with each incident it resolves.
+> A demo app that simulates an on-call engineer: feed it fake production outages, get AI-suggested fixes, and watch it get cheaper when it has seen similar problems before.
 
-**Powered by [Hindsight](https://hindsight.vectorize.io/) (agent memory) + [cascadeflow](https://docs.cascadeflow.ai/) (runtime intelligence) + [Groq](https://groq.com/) (LLM)**
+**Stack:** React dashboard · FastAPI · [Hindsight](https://hindsight.vectorize.io/) memory · [cascadeflow](https://docs.cascadeflow.ai/) routing · [Groq](https://groq.com/) LLMs · Supabase
+
+Built for **HackwithHyderabad 2.0**.
 
 ---
 
-## What It Does
+## What is this? (30 seconds)
 
-OperaOps is a production-ready incident response agent that:
+When real software breaks (database full, API rate limit, bad deploy), engineers must figure out **what went wrong** and **how to fix it**.
 
-- **Remembers every past incident** via [Hindsight agent memory](https://github.com/vectorize-io/hindsight) — each resolved incident is stored, and future incidents recall similar patterns
-- **Routes LLM calls intelligently** via [cascadeflow](https://github.com/lemony-ai/cascadeflow) — cheap models for known patterns, strong models only for novel/critical incidents
-- **Enforces per-incident budgets** — cascadeflow gracefully degrades to cheaper models before hitting the cap
-- **Produces a full audit trail** — every model decision, cost, and latency is logged
+**OperaOps does that with AI — using fake incidents for the demo:**
 
-## The Before / After
+1. You pick a simulated outage from a catalog (~100+ incidents).
+2. The agent recalls similar past ones from **memory** (Hindsight).
+3. An **LLM** (Groq) writes root cause, fix, and confidence.
+4. The dashboard shows **cost**, **latency**, and whether it **Diagnosed** or **Failed**.
 
-| | Incident #1 | Incident #5 |
-|--|-------------|-------------|
-| Memory context | None | 3 similar past incidents recalled |
-| Model calls | 4 (all expensive) | 1 (cheap, memory-informed) |
-| Cost | ~$0.0180 | ~$0.0030 |
-| Response quality | Generic | Pinpoints known fix immediately |
+It does **not** connect to live production systems. It is a **hackathon demo** showing smart AI routing + learning over time.
+
+---
+
+## Try it in the UI
+
+1. Start backend + frontend (see [Setup](#setup) below).
+2. Open **http://localhost:5173**
+3. Pick an incident from the dropdown → **Trigger Incident**
+4. Or click **Demo Sequence (×5)** — runs 5 incidents to show memory + cost improving on repeats
+
+**How to read a result card:**
+
+| UI element | Meaning |
+|------------|---------|
+| **Diagnosed** / **Failed** | Did the AI produce a valid fix? |
+| **3 recalled** | Memory found 3 similar past incidents |
+| **db_expert / api_expert** | Which domain router handled it |
+| **Root cause / Suggested fix** | The AI answer |
+| **$0.001x** | Cost of that LLM call |
+| **Pattern analysis** | Optional long memory summary (click to expand) |
+
+---
+
+## The demo story
+
+| | First time seeing an outage | After memory has learned |
+|--|----------------------------|---------------------------|
+| Memory | None | 3 similar incidents recalled |
+| Model | Balanced / strong | Often cheaper tier |
+| Cost | ~$0.001–0.004 | Can drop on repeats |
+| Quality | Generic | Points at known fix patterns |
 
 ---
 
 ## Stack
 
-- **Frontend:** React + Vite + Tailwind CSS
-- **Backend:** FastAPI (Python)
-- **Memory:** [Hindsight Cloud](https://ui.hindsight.vectorize.io) by Vectorize
-- **Runtime Intelligence:** [cascadeflow](https://docs.cascadeflow.ai/)
-- **LLM:** Groq (qwen3-32b / llama-3.3-70b)
-- **Database:** Supabase
+| Layer | Technology |
+|-------|------------|
+| Frontend | React + Vite + Tailwind |
+| Backend | FastAPI (Python) |
+| Memory | Hindsight Cloud (`opera` bank) |
+| Routing / budget | cascadeflow |
+| LLM | Groq — `openai/gpt-oss-20b`, `llama-3.3-70b-versatile`, `openai/gpt-oss-120b` |
+| Synthetic data | NeMo Data Designer (optional, `NVIDIA_API_KEY`) |
+| Database | Supabase (migrations for persistence) |
 
 ---
 
@@ -42,21 +73,30 @@ OperaOps is a production-ready incident response agent that:
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/YOUR_TEAM/operaops
-cd operaops
+git clone <your-repo-url>
+cd OperaOps
 ```
 
-### 2. Backend
+### 2. Environment
+
+```bash
+cp .env.example .env.local
+# Fill in GROQ_API_KEY, HINDSIGHT_API_KEY, HINDSIGHT_BANK_ID=opera, Supabase vars
+```
+
+Secrets live in **`.env.local` only** — never commit it (see `.gitignore`).
+
+### 3. Backend
 
 ```bash
 cd backend
 pip install -r requirements.txt
-cp ../.env.example .env
-# Fill in your keys in .env
-uvicorn main:app --reload
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 3. Frontend
+API docs: **http://localhost:8000/docs**
+
+### 4. Frontend
 
 ```bash
 cd frontend
@@ -64,96 +104,107 @@ npm install
 npm run dev
 ```
 
-### 4. Environment variables
+App: **http://localhost:5173**
 
-Copy `.env.example` to `.env` and fill in:
+### 5. Migrations
 
-```env
-GROQ_API_KEY=           # groq.com — free tier
-HINDSIGHT_API_KEY=      # ui.hindsight.vectorize.io — use promo MEMHACK625 for $50 credit
-HINDSIGHT_PIPELINE_ID=  # from Hindsight Cloud dashboard
-SUPABASE_URL=           # optional, for production persistence
-SUPABASE_ANON_KEY=      # optional
+```bash
+# From repo root
+python scripts/migrate.py --hindsight-only    # seed Hindsight memory bank
+python scripts/migrate.py --supabase-only     # needs SUPABASE_DB_PASSWORD in .env.local
+python scripts/migrate.py                     # both
 ```
 
-> **Note:** cascadeflow needs no API key — `pip install cascadeflow` is all it takes.
+### 6. Generate more incidents (optional)
+
+```bash
+pip install data-designer
+python scripts/generate_incidents_nvidia.py --count 35 --merge
+python scripts/migrate.py --hindsight-only --force
+```
+
+### 7. Test Groq
+
+```bash
+python scripts/test_groq.py
+```
 
 ---
 
-## How Hindsight Is Used
+## Key environment variables
 
-Every resolved incident is stored in Hindsight with:
-- Error signature and stack trace summary
-- Root cause identified by the agent
-- Fix that was applied
-- Resolution time and severity
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GROQ_API_KEY` | Yes | LLM diagnosis |
+| `HINDSIGHT_API_KEY` | Yes | Agent memory |
+| `HINDSIGHT_BANK_ID` | Yes | Memory bank (`opera`) |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | Optional | REST API |
+| `SUPABASE_DB_PASSWORD` | For migrations | Postgres schema |
+| `NVIDIA_API_KEY` | Optional | NeMo Data Designer + NIM |
 
-On the next incident, the agent queries Hindsight with semantic search. Top-3 similar past incidents are injected into the agent's context, making the diagnosis faster and more accurate.
-
-```python
-# Store after resolution
-await hindsight.store(incident_id, memory_content, metadata)
-
-# Recall before diagnosis
-memories = await hindsight.recall(query, top_k=3)
-```
-
-→ [Hindsight documentation](https://hindsight.vectorize.io/) | [Vectorize agent memory](https://vectorize.io/what-is-agent-memory)
+See `.env.example` for the full list.
 
 ---
 
-## How cascadeflow Is Used
+## Data files
 
-Every LLM call goes through cascadeflow's router:
-
-```python
-model, reason = cascade.select_model(
-    incident_severity=incident["severity"],
-    has_memory_match=has_memory,
-    memory_confidence=memory_confidence,
-    incident_budget_remaining=budget_left,
-)
-```
-
-Routing rules:
-- P1 + no memory → strong model (novel critical incident)
-- P1 + high memory confidence → cheap model (known pattern)
-- Budget < 20% → cheap model regardless
-- Every decision is logged to the audit trail
-
-→ [cascadeflow documentation](https://docs.cascadeflow.ai/) | [cascadeflow GitHub](https://github.com/lemony-ai/cascadeflow)
+| Path | Purpose |
+|------|---------|
+| `data/incidents.json` | Synthetic outage catalog (triggered in UI) |
+| `data/runbooks.json` | Category playbooks (database, deployment, …) |
+| `data/trajectories/` | Agent run logs (flywheel) |
 
 ---
 
-## API Endpoints
+## API endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/incidents/synthetic` | List all synthetic incidents |
-| POST | `/incidents/trigger` | Trigger incident through agent pipeline |
-| GET | `/incidents` | List all processed incidents |
-| GET | `/costs/summary` | Session cost summary |
-| GET | `/costs/audit` | Full cascadeflow audit trail |
-| POST | `/demo/run-sequence` | Run 5-incident demo sequence |
+| GET | `/health` | Status, Hindsight mode, LLM config |
+| GET | `/incidents/synthetic` | List incident catalog |
+| POST | `/incidents/trigger` | Run one incident through agent |
+| GET | `/incidents` | Session incident history |
+| GET | `/costs/summary` | Session spend + MoE stats |
+| GET | `/costs/audit` | Full routing audit log |
+| GET | `/moe/stats` | Expert activations, fast-path hits |
+| POST | `/eval/run` | Benchmark vs `incidents.json` |
+| POST | `/demo/run-sequence` | 5-incident learning demo |
 
 ---
 
-## Architecture
+## Architecture (simplified)
 
 ```
-Incident Input
-     ↓
-Hindsight Recall (top-3 similar past incidents)
-     ↓
-cascadeflow Route (select model + check budget)
-     ↓
-Groq LLM (diagnosis + RCA draft)
-     ↓
-cascadeflow Log (cost, latency, model, reason)
-     ↓
-Hindsight Store (save for future recall)
+Incident input
+  → Parallel perceive (Hindsight recall + runbook + MoE expert)
+  → Memory fast path? (high confidence → skip LLM)
+  → Smart router (nano / balanced / strong Groq model)
+  → ReAct loop (diagnose → validate → escalate if low confidence)
+  → Guardrails → store in Hindsight → log trajectory
 ```
+
+---
+
+## Project layout
+
+```
+OperaOps/
+├── backend/          # FastAPI agent (DECA-IR pipeline)
+├── frontend/         # React dashboard
+├── data/             # Incidents, runbooks, trajectories
+├── scripts/          # migrate, generate data, test groq
+├── supabase/         # SQL migrations
+├── .env.example      # Template (safe to commit)
+└── .env.local        # Your keys (gitignored)
+```
+
+---
+
+## Security
+
+- **Do not commit** `.env.local`, API keys, or private notes.
+- Only **`README.md`** is tracked for markdown in this repo; other `.md` files stay local.
+- Rotate any key that was ever pushed to a remote by mistake.
 
 ---
 

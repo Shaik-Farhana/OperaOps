@@ -1,22 +1,29 @@
 """
 agent.py
-Core OperaOps incident response agent.
-Orchestrates: Hindsight recall → cascadeflow routing → Groq LLM → Hindsight store
+OperaOps DECA-IR incident response agent.
+Parallel perceive → MoE route → ReAct loop → guardrails → store → flywheel.
 """
 
-import os
+import asyncio
 import time
 import json
-from groq import Groq
-from dotenv import load_dotenv
+import env_loader  # noqa: F401 — loads .env.local from project root
+
 from hindsight_client import hindsight
 from cascade_router import cascade
+from moe_router import route_incident
+from difficulty_classifier import classify_difficulty
+from smart_router import smart_route
+import llm_client
+from guardrails import apply_guardrails
+from flywheel import log_trajectory
+from tools.memory import recall_incidents, store_resolution
+from tools.runbook import fetch_runbook
+from tools.validator import validate_diagnosis
+from tools.eval_tool import compare_to_known_fix
+from tools.policy import escalation_check
 
-load_dotenv()
-
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-SYSTEM_PROMPT = """You are OperaOps, an expert incident response agent for engineering teams.
+BASE_SYSTEM_PROMPT = """You are OperaOps, an expert incident response agent for engineering teams.
 You diagnose production incidents, suggest fixes, and write RCA drafts.
 
 When given an incident, you:
@@ -26,7 +33,7 @@ When given an incident, you:
 4. Flag if human escalation is required
 5. Write a concise RCA summary
 
-Use any recalled past incidents to inform your diagnosis. If a similar incident was resolved before, reference it.
+Use any recalled past incidents and runbook steps to inform your diagnosis.
 
 Always respond in this exact JSON format:
 {
@@ -41,142 +48,256 @@ Always respond in this exact JSON format:
   "memory_informed": boolean
 }"""
 
+REACT_MAX_STEPS = 3
+CONFIDENCE_ESCALATION_THRESHOLD = 0.6
 
-async def run_agent_pipeline(incident: dict) -> dict:
-    """
-    Full agent pipeline for a single incident.
-    Returns complete diagnosis with audit trail.
-    """
-    incident_id = incident["id"]
-    start_time = time.time()
-    pipeline_log = []
 
-    # ── STEP 1: RECALL ────────────────────────────────────────────────────────
-    recall_query = f"{incident['error_message']} {incident['service']} {incident.get('category', '')}"
-    recalled_memories = await hindsight.recall(recall_query, top_k=3)
+def _build_memory_section(recalled_memories: list[dict]) -> str:
+    if not recalled_memories:
+        return ""
+    parts = []
+    for i, mem in enumerate(recalled_memories):
+        parts.append(f"Past incident {i+1}: {mem.get('content', '')[:400]}")
+    return "\n\nRECALLED PAST INCIDENTS (from Hindsight memory):\n" + "\n".join(parts)
 
-    has_memory = len(recalled_memories) > 0
-    memory_confidence = 0.0
 
-    recalled_context = ""
-    recalled_ids = []
-
-    if recalled_memories:
-        # Build context string from recalled memories
-        memory_parts = []
-        for i, mem in enumerate(recalled_memories):
-            content = mem.get("content", "")
-            memory_confidence = max(memory_confidence, mem.get("_score", 0.5) / 10)
-            recalled_ids.append(mem.get("metadata", {}).get("incident_id", f"past_{i}"))
-            memory_parts.append(f"Past incident {i+1}: {content[:400]}")
-        recalled_context = "\n".join(memory_parts)
-        memory_confidence = min(memory_confidence, 0.95)
-
-    pipeline_log.append({
-        "step": "recall",
-        "memories_found": len(recalled_memories),
-        "memory_confidence": memory_confidence,
-    })
-
-    # ── STEP 2: ROUTE (cascadeflow) ───────────────────────────────────────────
-    incident_budget_remaining = cascade.budget_usd - cascade.get_incident_cost(incident_id)
-    model, routing_reason = cascade.select_model(
-        incident_severity=incident["severity"],
-        has_memory_match=has_memory,
-        memory_confidence=memory_confidence,
-        incident_budget_remaining=incident_budget_remaining,
-    )
-
-    pipeline_log.append({
-        "step": "route",
-        "model_selected": model,
-        "routing_reason": routing_reason,
-        "budget_remaining": round(incident_budget_remaining, 4),
-    })
-
-    # ── STEP 3: BUILD PROMPT ──────────────────────────────────────────────────
-    memory_section = ""
-    if recalled_context:
-        memory_section = f"\n\nRECALLED PAST INCIDENTS (from Hindsight memory):\n{recalled_context}"
-
-    user_prompt = f"""INCIDENT REPORT:
+def _build_user_prompt(incident: dict, incident_id: str, compressed_trace: str, memory_section: str, runbook_snippet: str) -> str:
+    runbook_block = f"\n\nRUNBOOK ({incident.get('category', 'general')}):\n{runbook_snippet}" if runbook_snippet else ""
+    return f"""INCIDENT REPORT:
 ID: {incident_id}
 Title: {incident['title']}
 Service: {incident['service']}
 Severity: {incident['severity']}
+Category: {incident.get('category', 'unknown')}
 Error: {incident['error_message']}
 Stack Trace:
-{incident.get('stack_trace', 'Not available')}
-{memory_section}
+{compressed_trace}
+{memory_section}{runbook_block}
 
 Diagnose this incident and provide a resolution plan."""
 
-    # ── STEP 4: LLM CALL (via Groq) ──────────────────────────────────────────
-    llm_start = time.time()
-    escalated = model == cascade.strong_model
 
-    # Map cascadeflow model names to Groq model IDs
-    groq_model_map = {
-        "qwen/qwen3-32b": "qwen-qwq-32b",
-        "openai/gpt-oss-120b": "llama-3.3-70b-versatile",  # Best available on Groq free tier
-    }
-    groq_model = groq_model_map.get(model, "qwen-qwq-32b")
+async def run_agent_pipeline(incident: dict) -> dict:
+    incident_id = incident["id"]
+    start_time = time.time()
+    pipeline_log = []
+    react_log = []
 
-    try:
-        completion = groq_client.chat.completions.create(
-            model=groq_model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-            max_tokens=1024,
-            response_format={"type": "json_object"},
+    recall_query = f"{incident['error_message']} {incident['service']} {incident.get('category', '')}"
+
+    # ── PARALLEL PERCEIVE ─────────────────────────────────────────────────────
+    recall_task = recall_incidents(recall_query, top_k=3)
+    runbook_task = asyncio.to_thread(fetch_runbook, incident.get("category", "unknown"))
+
+    recall_result, runbook = await asyncio.gather(recall_task, runbook_task)
+
+    recalled_memories = recall_result["memories"]
+    recalled_ids = recall_result["ids"]
+    has_memory = len(recalled_memories) > 0
+
+    moe_result = route_incident(incident, recalled_memories, recalled_ids)
+
+    pipeline_log.append({
+        "step": "parallel_perceive",
+        "memories_found": len(recalled_memories),
+        "memory_confidence": moe_result.memory_confidence,
+        "expert": moe_result.activated_expert,
+        "context_path": moe_result.context_path,
+    })
+
+    trace_len = len(incident.get("stack_trace", ""))
+    difficulty = classify_difficulty(
+        severity=incident["severity"],
+        memory_confidence=moe_result.memory_confidence,
+        trace_length=trace_len,
+        expert_score_margin=moe_result.expert_score_margin,
+        llm_skipped=moe_result.llm_skipped,
+    )
+
+    budget_remaining = cascade.budget_usd - cascade.get_incident_cost(incident_id)
+
+    # ── FAST PATH ─────────────────────────────────────────────────────────────
+    if moe_result.llm_skipped and moe_result.fast_path_diagnosis:
+        diagnosis = apply_guardrails(moe_result.fast_path_diagnosis)
+        total_time = int((time.time() - start_time) * 1000)
+
+        audit_entry = cascade.log_decision(
+            incident_id=incident_id,
+            model_used="memory_fast_path",
+            routing_reason="Memory fast path — faithfulness >= threshold",
+            cost_usd=0.0,
+            latency_ms=total_time,
+            escalated=False,
+            call_number=1,
+            expert_id=moe_result.activated_expert,
+            routing_mode="deca_ir_fast_path",
+            llm_skipped=True,
+            difficulty=difficulty.level,
+            provider="none",
+            tokens_saved=moe_result.tokens_saved_estimate + 800,
         )
-        raw_response = completion.choices[0].message.content
-        diagnosis = json.loads(raw_response)
 
-    except Exception as e:
-        # Graceful fallback
-        print(f"[Agent] LLM error: {e}")
-        diagnosis = {
-            "root_cause": f"Unable to diagnose automatically: {str(e)[:100]}",
-            "confidence": 0.0,
-            "fix": "Manual investigation required",
-            "estimated_resolution_minutes": 30,
-            "escalate_to_human": True,
-            "escalation_reason": "LLM call failed",
-            "rca_summary": "Automated diagnosis failed. Manual review needed.",
-            "recalled_incidents": recalled_ids,
-            "memory_informed": has_memory,
-        }
+        await _finalize_store(incident, incident_id, diagnosis)
+        fms = compare_to_known_fix(diagnosis, incident.get("known_fix"))
 
-    llm_latency = int((time.time() - llm_start) * 1000)
+        await log_trajectory({
+            "incident_id": incident_id,
+            "input": {"title": incident["title"], "severity": incident["severity"]},
+            "expert": moe_result.activated_expert,
+            "difficulty": difficulty.level,
+            "llm_skipped": True,
+            "diagnosis": diagnosis,
+            "cost_usd": 0.0,
+            "latency_ms": total_time,
+            "fms_score": fms.get("score"),
+        })
 
-    # ── STEP 5: LOG TO cascadeflow AUDIT TRAIL ────────────────────────────────
-    call_number = len(cascade.get_incident_audit(incident_id)) + 1
-    estimated_tokens = len(user_prompt.split()) + len(str(diagnosis).split())
-    cost = cascade.estimate_cost(model, estimated_tokens)
+        return _compile_result(
+            incident_id, diagnosis, moe_result, difficulty, None,
+            audit_entry, pipeline_log, react_log, total_time,
+            cost=0.0, latency=total_time, llm_skipped=True,
+        )
 
-    audit_entry = cascade.log_decision(
-        incident_id=incident_id,
-        model_used=model,
-        routing_reason=routing_reason,
-        cost_usd=cost,
-        latency_ms=llm_latency,
-        escalated=escalated,
-        call_number=call_number,
+    # ── SMART ROUTE ───────────────────────────────────────────────────────────
+    route = smart_route(
+        expert_preferred_tier=moe_result.expert_config["preferred_tier"],
+        expert_thinking_budget=moe_result.expert_config["thinking_budget"],
+        difficulty=difficulty,
+        severity=incident["severity"],
+        memory_confidence=moe_result.memory_confidence,
+        budget_remaining=budget_remaining,
+        total_budget=cascade.budget_usd,
+        trace_length=trace_len,
     )
 
     pipeline_log.append({
-        "step": "llm_call",
-        "model": groq_model,
-        "latency_ms": llm_latency,
-        "cost_usd": cost,
-        "escalated": escalated,
+        "step": "smart_route",
+        "tier": route.model_tier,
+        "difficulty": route.difficulty,
+        "max_tokens": route.max_tokens,
+        "thinking_on": route.thinking_on,
     })
 
-    # ── STEP 6: STORE IN HINDSIGHT ────────────────────────────────────────────
+    system_prompt = BASE_SYSTEM_PROMPT + "\n\n" + moe_result.expert_config["system_prompt_suffix"]
+    memory_section = _build_memory_section(recalled_memories)
+    user_prompt = _build_user_prompt(
+        incident, incident_id, moe_result.compressed_trace,
+        memory_section, runbook.get("snippet", ""),
+    )
+
+    # ── REACT LOOP ────────────────────────────────────────────────────────────
+    diagnosis = {}
+    llm_result = None
+    total_cost = 0.0
+    total_llm_latency = 0
+    escalated_once = False
+
+    for step in range(REACT_MAX_STEPS):
+        force_strong = escalated_once and step > 0
+        if force_strong:
+            route = smart_route(
+                expert_preferred_tier="strong",
+                expert_thinking_budget=1024,
+                difficulty=difficulty,
+                severity=incident["severity"],
+                memory_confidence=moe_result.memory_confidence,
+                budget_remaining=budget_remaining - total_cost,
+                total_budget=cascade.budget_usd,
+                trace_length=trace_len,
+                force_strong=True,
+            )
+
+        react_log.append({"step": step + 1, "action": "llm_diagnose", "tier": route.model_tier})
+
+        llm_result = llm_client.complete(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            tier=route.model_tier,
+            groq_model=route.groq_model_id,
+            nim_model=route.nim_model_id,
+            max_tokens=route.max_tokens,
+            thinking_on=route.thinking_on,
+        )
+
+        diagnosis = llm_result.diagnosis
+        diagnosis["recalled_incidents"] = recalled_ids
+        diagnosis["memory_informed"] = has_memory
+        diagnosis["memories_recalled"] = len(recalled_memories)
+
+        est_tokens = llm_result.prompt_tokens + llm_result.completion_tokens or 800
+        call_cost = cascade.estimate_cost(route.model_tier, est_tokens)
+        total_cost += call_cost
+        total_llm_latency += llm_result.latency_ms
+
+        cascade.log_decision(
+            incident_id=incident_id,
+            model_used=route.model_tier,
+            routing_reason=route.routing_reason,
+            cost_usd=call_cost,
+            latency_ms=llm_result.latency_ms,
+            escalated=route.escalated,
+            call_number=step + 1,
+            expert_id=moe_result.activated_expert,
+            routing_mode="deca_ir_react",
+            difficulty=route.difficulty,
+            provider=llm_result.provider,
+            tokens_saved=moe_result.tokens_saved_estimate,
+        )
+
+        validation = validate_diagnosis(diagnosis)
+        react_log.append({"step": step + 1, "action": "validate_diagnosis", "valid": validation["valid"]})
+
+        if not validation["valid"]:
+            user_prompt += "\n\nYour previous response failed JSON validation. Fix the schema and respond again."
+            continue
+
+        confidence = diagnosis.get("confidence", 0)
+        if confidence < CONFIDENCE_ESCALATION_THRESHOLD and not escalated_once and step < REACT_MAX_STEPS - 1:
+            escalated_once = True
+            react_log.append({"step": step + 1, "action": "escalate_tier", "reason": f"confidence {confidence} < {CONFIDENCE_ESCALATION_THRESHOLD}"})
+            continue
+
+        policy = escalation_check(diagnosis, incident["severity"], moe_result.memory_confidence)
+        react_log.append({"step": step + 1, "action": "escalation_check", "passed": policy["passed"]})
+        break
+
+    diagnosis = apply_guardrails(diagnosis)
+    faithfulness = hindsight.compute_faithfulness(diagnosis, recalled_memories)
+    fms = compare_to_known_fix(diagnosis, incident.get("known_fix"))
+
+    await _finalize_store(incident, incident_id, diagnosis)
+    pattern_insight = await hindsight.reflect(f"{incident.get('category', '')} incidents")
+
+    total_time = int((time.time() - start_time) * 1000)
+
+    await log_trajectory({
+        "incident_id": incident_id,
+        "input": {"title": incident["title"], "severity": incident["severity"]},
+        "expert": moe_result.activated_expert,
+        "difficulty": difficulty.level,
+        "routing": {"tier": route.model_tier, "provider": llm_result.provider if llm_result else None},
+        "diagnosis": diagnosis,
+        "tools_called": [r["action"] for r in react_log],
+        "cost_usd": total_cost,
+        "latency_ms": total_time,
+        "fms_score": fms.get("score"),
+        "faithfulness": faithfulness,
+    })
+
+    last_audit = cascade.get_incident_audit(incident_id)[-1] if cascade.get_incident_audit(incident_id) else {}
+
+    return _compile_result(
+        incident_id, diagnosis, moe_result, difficulty, route,
+        last_audit, pipeline_log, react_log, total_time,
+        cost=total_cost, latency=total_llm_latency, llm_skipped=False,
+        llm_result=llm_result, faithfulness=faithfulness, fms=fms,
+        pattern_insight=pattern_insight,
+    )
+
+
+async def _finalize_store(incident: dict, incident_id: str, diagnosis: dict):
     memory_content = (
         f"Incident: {incident['title']} | Service: {incident['service']} | "
         f"Severity: {incident['severity']} | Category: {incident.get('category', 'unknown')} | "
@@ -185,8 +306,7 @@ Diagnose this incident and provide a resolution plan."""
         f"Fix: {diagnosis.get('fix', '')[:300]} | "
         f"Resolution time: {diagnosis.get('estimated_resolution_minutes', 0)} min"
     )
-
-    await hindsight.store(
+    await store_resolution(
         incident_id=incident_id,
         content=memory_content,
         metadata={
@@ -197,31 +317,46 @@ Diagnose this incident and provide a resolution plan."""
         },
     )
 
-    pipeline_log.append({"step": "store", "memory_stored": True})
 
-    # ── STEP 7: CHECK FOR PATTERNS (reflect) ──────────────────────────────────
-    pattern_insight = await hindsight.reflect(
-        f"{incident.get('category', '')} incidents"
-    )
-
-    # ── COMPILE RESULT ────────────────────────────────────────────────────────
-    total_time = int((time.time() - start_time) * 1000)
-
+def _compile_result(
+    incident_id, diagnosis, moe_result, difficulty, route,
+    audit_entry, pipeline_log, react_log, total_time,
+    cost, latency, llm_skipped, llm_result=None, faithfulness=0.0,
+    fms=None, pattern_insight=None,
+):
     return {
         "incident_id": incident_id,
-        "diagnosis": {
-            **diagnosis,
-            "recalled_incidents": recalled_ids,
-            "memory_informed": has_memory,
-            "memories_recalled": len(recalled_memories),
+        "diagnosis": diagnosis,
+        "moe": {
+            "activated_expert": moe_result.activated_expert,
+            "expert_scores": moe_result.expert_scores,
+            "routing_mode": "deca_ir",
+            "context_path": moe_result.context_path,
+            "llm_skipped": llm_skipped,
+            "tokens_saved_estimate": moe_result.tokens_saved_estimate,
+            "memory_confidence": moe_result.memory_confidence,
+        },
+        "difficulty": {
+            "level": difficulty.level,
+            "thinking_on": difficulty.thinking_on,
+            "max_tokens": difficulty.max_tokens,
+            "reason": difficulty.reason,
         },
         "routing": {
-            "model_used": model,
-            "groq_model": groq_model,
-            "routing_reason": routing_reason,
-            "escalated": escalated,
+            "model_used": route.model_tier if route else "memory_fast_path",
+            "groq_model": route.groq_model_id if route else None,
+            "nim_model": route.nim_model_id if route else None,
+            "routing_reason": route.routing_reason if route else "memory fast path",
+            "escalated": route.escalated if route else False,
             "cost_usd": cost,
-            "latency_ms": llm_latency,
+            "latency_ms": latency,
+            "provider": llm_result.provider if llm_result else "none",
+            "thinking_on": route.thinking_on if route else False,
+        },
+        "react_log": react_log,
+        "eval": {
+            "faithfulness": faithfulness,
+            "fix_match_score": fms.get("score") if fms else None,
         },
         "audit_entry": audit_entry,
         "pattern_insight": pattern_insight,

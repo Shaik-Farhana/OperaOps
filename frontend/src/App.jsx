@@ -3,7 +3,7 @@ import { AlertTriangle, Play, Zap, Brain, BarChart2, RefreshCw, Activity, Chevro
 import IncidentFeed from './components/IncidentFeed'
 import MemoryTimeline from './components/MemoryTimeline'
 import CostDashboard from './components/CostDashboard'
-import { getSyntheticIncidents, triggerIncident, getAuditLog } from './lib/api'
+import { getSyntheticIncidents, triggerIncident, getAuditLog, getMoeStats } from './lib/api'
 
 const TABS = [
   { id: 'feed', label: 'Incident Feed', icon: Activity },
@@ -16,6 +16,7 @@ export default function App() {
   const [selectedIncident, setSelectedIncident] = useState(null)
   const [resolvedIncidents, setResolvedIncidents] = useState([])
   const [auditLog, setAuditLog] = useState([])
+  const [moeStats, setMoeStats] = useState(null)
   const [loading, setLoading] = useState(false)
   const [demoLoading, setDemoLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('feed')
@@ -34,8 +35,9 @@ export default function App() {
 
   const refreshAudit = useCallback(async () => {
     try {
-      const data = await getAuditLog()
-      setAuditLog(data.audit_log || [])
+      const [audit, moe] = await Promise.all([getAuditLog(), getMoeStats()])
+      setAuditLog(audit.audit_log || [])
+      setMoeStats(moe)
     } catch {}
   }, [])
 
@@ -93,7 +95,7 @@ export default function App() {
             </div>
             <div>
               <span className="font-semibold text-sm tracking-tight">OperaOps</span>
-              <span className="text-muted text-xs ml-2 hidden sm:inline">Incident Response Agent</span>
+              <span className="text-muted text-xs ml-2 hidden sm:inline">DECA-IR Agent</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -220,7 +222,7 @@ export default function App() {
                   <BarChart2 size={14} className="text-emerald-400" />
                   <h2 className="text-sm font-semibold">cascadeflow Intelligence</h2>
                 </div>
-                <CostDashboard incidents={resolvedIncidents} auditLog={auditLog} />
+                <CostDashboard incidents={resolvedIncidents} auditLog={auditLog} moeStats={moeStats} />
               </div>
             )}
           </div>

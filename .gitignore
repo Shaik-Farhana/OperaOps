@@ -1,3 +1,30 @@
+# Secrets — never commit
 .env
+.env.*
+!.env.example
 backend/.env
+backend/.env.*
 frontend/.env
+frontend/.env.*
+supabase/.env
+supabase/.env.*
+
+# Markdown — only root README is published
+**/*.md
+!/README.md
+
+# Common secret patterns
+*.pem
+*.key
+credentials.json
+secrets/
+
+# Python / local artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/data/
+
+# Generated data artifacts (keep incidents.json tracked)
+data/generated/
+data/.hindsight_migration_v1.json
